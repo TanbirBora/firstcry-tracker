@@ -1,63 +1,64 @@
 import os
 import sys
+import time
 import requests
-from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
-# Fetch secrets from GitHub environment
 URL = os.environ.get("TRACKING_URL")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 def send_telegram_alert(message):
-    """Sends a message to your Telegram app."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        # Short timeout so it doesn't hang
-        requests.post(url, json=payload, timeout=10) 
-        print("Telegram alert sent successfully!")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+        print(f"Telegram error: {e}")
 
-def get_robust_session():
-    """Creates a bulletproof connection that retries on temporary web errors."""
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    return session
+def check_firstcry_stock():
+    # Set up invisible Chrome Browser
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Runs invisible
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-def check_stock():
-    session = get_robust_session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
     try:
-        print(f"Checking stock for: {URL}")
-        response = session.get(URL, headers=headers, timeout=15)
-        response.raise_for_status()
+        print(f"Loading FirstCry: {URL}")
+        driver.get(URL)
         
-        soup = BeautifulSoup(response.content, 'html.parser')
-        page_text = soup.get_text().lower()
+        # Give FirstCry's Javascript time to load the actual data
+        time.sleep(5) 
         
-        # Checking for common FirstCry out-of-stock phrases
-        if "out of stock" in page_text or "sold out" in page_text:
-            print("Status: Still out of stock.")
+        # Check the page text AFTER Javascript has rendered
+        page_source = driver.page_source.lower()
+        
+        # FirstCry uses specific phrasing for out of stock items
+        if "out of stock" in page_source or "currently unavailable" in page_source:
+            print("Status: Confirmed Out Of Stock by FirstCry.")
         else:
-            print("Status: POTENTIAL RESTOCK!")
-            send_telegram_alert(f"🚨 HOT WHEELS RESTOCK ALERT! 🚨\n\nIt looks like the item might be back in stock. Check immediately:\n{URL}")
+            # Secondary check: Does the 'Add to Cart' button exist?
+            # FirstCry typically uses divs with text like "ADD TO CART"
+            if "add to cart" in page_source:
+                print("Status: ADD TO CART BUTTON FOUND!")
+                send_telegram_alert(f"🚨 HOT WHEELS RESTOCK ALERT! 🚨\n\n'Add to Cart' is active on FirstCry! Check immediately:\n{URL}")
+            else:
+                print("Status: Unclear. Could not verify stock status or block detected.")
 
     except Exception as e:
-        print(f"An error occurred while checking the page: {e}")
-        sys.exit(1)
+        print(f"Error checking FirstCry: {e}")
+    finally:
+        driver.quit() # Always close the browser to free memory
 
 if __name__ == "__main__":
-    if not all([URL, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
-        print("Error: Missing environment variables. Check GitHub Secrets.")
-        sys.exit(1)
+    check_firstcry_stock()
     
-    check_stock()
-  
